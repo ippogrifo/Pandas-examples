@@ -1,0 +1,162 @@
+# Own Laptop - 30-12-2018
+# CROSSING TABLES: crosses 2 tables with different (2) number of attributes, 
+# zeroes out small imports, randomizes the others and compensates for the difference, preserving attributes totals 
+
+
+import sys
+import json
+import copy
+
+import numpy as np
+import pandas as pd
+from numpy.random import randn
+######################################################
+# Un-comment for working laptop
+# from ferpy.ferpy import FerPy
+# from ferpy.ferpy import convert_criteria_filter_to_dictionary
+########################################################
+# Print settings
+desired_width=320
+pd.set_option('display.width', desired_width)
+np.set_printoptions(linewidth=desired_width)
+pd.set_option('display.max_columns',10)
+
+# User-defined variables:
+#WORKING LAPTOP:
+#file_path = 'C:/Users/scosso/Desktop/PY folders/Files for Scripts/withGuidance/crossTables_WG.xlsx'
+#OWN LAPTOP:
+file_path = 'C:/Users/user/Desktop/PY folders/Files for Scripts/withGuidance/crossTables_WG.xlsx'
+
+ArrType = pd.read_excel(file_path, sheet_name = 'ArrType')
+CountryRev = pd.read_excel(file_path, sheet_name = 'CountryRev')
+BrandRev = pd.read_excel(file_path, sheet_name = 'BrandRev')
+StgArrType = pd.read_excel(file_path, sheet_name = 'StgArrType')
+Forbidden_combos = pd.read_excel(file_path, sheet_name='Forbidden_combos')
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+#Functions
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Function to calculate shares of parent total
+def ParentTotalShares_fun (df,attribute,metric):
+    return np.where(df[metric]==0,0, df.groupby(attribute)[metric].transform(lambda x: x/sum(x)))
+
+ArrType ['SharesOfParent'] = ParentTotalShares_fun(ArrType,attribute = 'Product Brand (Client View)', metric = 'Vendor Revenue')
+#print(ArrType)
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Function to zero out small values, randomise the others and compensate using the max to preserve the original total
+def CompRandZeroOut_fun(df, metric, attribute, threshold, rand, total, mx, mx_ndx):
+
+    M=df.shape[0]
+    rng = np.random.random_sample(M,)
+    df['rng']=(1+rng/10)*df[metric] #used to randomize entries
+
+    # Zeroes out small values (providing they aren't the only ones= 'mx') and randomizes the remaining ones
+    df ['prelim_metric'] = np.where ((df['rng']<threshold)&(df[metric]<mx),0,df['rng']) # LATER ASSIGNED: mx = df[metric].max()
+
+    # LATER ASSIGNED: mx_ndx = df[metric].idxmax(axis=0, skipna=True)
+    #idxmax picks up only the FIRST max value - so compensation will happen only once, even if there are 2 identical max values
+    prelimTotal = df['prelim_metric'].sum() - df.loc[mx_ndx, 'prelim_metric']
+    df.loc[mx_ndx,'prelim_metric']= total-prelimTotal # LATER ASSIGNED: total = df[metric].sum() Compensation restores original total
+    df[metric]=df['prelim_metric']
+    df.drop(['rng','prelim_metric'], axis=1, inplace=True)
+
+    return df
+## QC
+# QC_df = ArrType[ArrType['Product Brand (Client View)']=='DR']
+# QC_df = CompRandZeroOut_fun ( df = QC_df, metric='Vendor Revenue',attribute = 'Product Brand (Client View)',threshold=0.3,rand=0.05,
+#                               total = QC_df['Vendor Revenue'].sum(),mx=QC_df['Vendor Revenue'].max(),mx_ndx = QC_df['Vendor Revenue'].idxmax(axis=0, skipna=True)  )
+# print(QC_df)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Added in other function
+# # Splitting main table into multiple DFs and them looping to apply the function on each group
+# def split_fun(df,metric,attribute, fun_to_apply, threshold, rand):
+#
+#     grouped = df.groupby(attribute)
+#     l=[]
+#     for name, group in grouped:
+#         split_df = df[df[attribute] == name]
+#         split_df = fun_to_apply (df = split_df,metric=metric, attribute=attribute,threshold=threshold,rand=rand,
+#                         total = split_df[metric].sum(),mx = split_df [metric].max(), mx_ndx = split_df[metric].idxmax(axis=0, skipna=True))
+#         l.append(split_df)
+#
+#     df = pd.concat(l)
+#
+#     return df
+#     #~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~
+#     # the below works, but would remain a groupby object: TO ASK: how to convert into a manageable DataFrame
+#         # split_df = group
+#         # split_df = fun_to_apply(df=split_df, metric=metric, attribute=attribute, threshold=threshold, rand=rand,
+#         #                                          total = split_df[metric].sum(),mx = split_df [metric].max(), mx_ndx = split_df[metric].idxmax(axis=0, skipna=True))
+#         # split_df = pd.DataFrame(split_df)
+#     #~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~#~
+# # #QC
+# # QC_df = ArrType
+# # QC_df = split_fun(df = QC_df, metric ='Vendor Revenue',attribute = 'Product Brand (Client View)', fun_to_apply = CompRandZeroOut_fun,
+# #                   threshold=0.3,rand=0.05)
+# # print(QC_df)
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# TO PUT AT THE TOP
+# Multiplies 2 tables and zeroes out forbidden combinations
+
+def product_fun (table1, table2, attribute1, attribute2, metric, forbidden_combos, CompRandZeroOut_fun, threshold, rand):
+
+    print(table1[metric].sum())
+    print( table2[metric].sum())
+
+    if table1[metric].sum() - table2[metric].sum() ==0:
+
+        total = table2[metric].sum()
+
+        table2['share']=np.where(table2[metric]==0,0,table2[metric].transform(lambda x: x/sum(x)))
+        table2.drop (metric, axis = 1, inplace = True) # Avoids having different col name difficult to predict
+
+        # I need to create a dummy column (k) to merge the 2 df and get a cross join
+        crossJoin_df = table1.assign(k=1).merge(table2.assign(k=1), on ='k').drop('k',1)
+        crossJoin_df [metric] = crossJoin_df ['share']*crossJoin_df[metric]
+
+        #Zeroes out forbidden combinations and recalibrates shares
+        crossJoin_df ['concat'] = crossJoin_df[attribute1] + crossJoin_df[attribute2]
+        forbidden_combos['concat'] = forbidden_combos[attribute1] + forbidden_combos[attribute2]
+
+        crossJoin_df['share']= np.where(crossJoin_df['concat'].isin (forbidden_combos['concat']),0,crossJoin_df['share'])
+        grouped = crossJoin_df.groupby([attribute1])
+        L = []
+
+        for name, group in grouped:
+
+            if group['share'].sum()<1:
+                total = group[metric].sum()
+                group['share']= group['share'].transform(lambda x: x/sum(x))
+                group[metric] = group['share']*total
+
+            L.append(group)
+        crossJoin_df = pd.concat(L)
+
+      # Applying function to zero out/compensate
+        grouped = crossJoin_df.groupby(attribute1)
+        l = []
+        for name, group in grouped:
+            split_df = crossJoin_df[crossJoin_df[attribute1] == name]
+            split_df = CompRandZeroOut_fun(df=split_df, metric=metric, attribute=attribute1, threshold=threshold, rand=rand,
+                                    total=split_df[metric].sum(), mx=split_df[metric].max(),
+                                    mx_ndx=split_df[metric].idxmax(axis=0, skipna=True))
+            l.append(split_df)
+
+        crossJoin_df = pd.concat(l)
+
+        crossJoin_df.drop(['concat', 'share'], axis=1, inplace=True)
+        crossJoin_df.reset_index(drop=True, inplace=True)
+        return crossJoin_df
+
+    else:
+        return ("the tables can't be multiplied because their total is different!")
+
+
+# #QC:
+# QC_df = product_fun(table1=BrandRev,table2=StgArrType, attribute1 = 'Product Brand (Client View)', attribute2 = 'Storage Array Type',
+#                     metric = 'Vendor Revenue', forbidden_combos=Forbidden_combos, CompRandZeroOut_fun = CompRandZeroOut_fun,
+#                     threshold = 0.5, rand = 0.3)
+# print(QC_df)
+# QC_df.to_csv ('QC_df.csv', sep=',')
